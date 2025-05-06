@@ -1,0 +1,6 @@
+UserID,Username,TID,Acc Priv Category,Role,Entitlement,Acc Priv Group,Title,Department
+1,jdoe,1001,Admin,Manager,Read,GroupA,IT Manager,IT
+2,asmith,1002,User,Analyst,Write,GroupB,Data Analyst,IT
+3,mbrown,1003,User,Analyst,Read,GroupB,Data Analyst,Finance
+4,ljones,1004,Admin,Director,Read,GroupA,Director,Finance
+5,kwilson,1005,User,Manager,Write,GroupC,IT Manager,IT
