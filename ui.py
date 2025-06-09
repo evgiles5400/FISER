@@ -20,7 +20,26 @@ uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 if uploaded_file:
     try:
-        df = pd.read_csv(uploaded_file, encoding='utf-8')
+        # Handle file upload safely to prevent 'bytearray' encoding issues
+        import tempfile
+        import os
+        
+        # Use binary mode to avoid encoding issues
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.csv', mode='wb') as tmp_file:
+                tmp_file.write(uploaded_file.getbuffer())
+                tmp_path = tmp_file.name
+            
+            # Now read from the temporary file
+            df = pd.read_csv(tmp_path, encoding='utf-8')
+        finally:
+            # Ensure file is deleted even if read_csv fails
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass  # Ignore cleanup errors
         if list(df.columns) != REQUIRED_COLUMNS:
             st.error(f"CSV must have columns: {REQUIRED_COLUMNS}")
         else:
@@ -123,27 +142,23 @@ Baseline Access: For each peer group, lists Roles present in at least the baseli
                             For baseline-only reports, only the first section is included.
                         """
                         pdf = FPDF()
-                        # Try to use Aptos font if available
-                        font_path = os.path.join("fonts", "Aptos-Regular.ttf")
-                        if os.path.exists(font_path):
-                            try:
-                                pdf.add_font("Aptos", "", font_path, uni=True)
-                                base_font = "Aptos"
-                            except Exception as e:
-                                base_font = "Arial"
-                        else:
-                            base_font = "Arial"
+                        # Create PDF with default settings
+                        pdf = FPDF()
+                        
+                        # Always use helvetica (built-in font) for consistency and to avoid font issues
+                        # This resolves all font-related errors and deprecation warnings
+                        base_font = "helvetica"
                         pdf.add_page()
                         # Title Page
                         pdf.set_font(base_font, "B", 20)
-                        pdf.cell(0, 15, "FIS Entitlement Review", ln=1, align="C")
+                        pdf.cell(0, 15, "FIS Entitlement Review", new_x="LMARGIN", new_y="NEXT", align="C")
                         pdf.set_font(base_font, size=12)
-                        pdf.cell(0, 10, f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=1, align="C")
+                        pdf.cell(0, 10, f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", new_x="LMARGIN", new_y="NEXT", align="C")
                         pdf.ln(10)
 
                         # Dataset Metrics
                         pdf.set_font(base_font, "B", 14)
-                        pdf.cell(0, 12, "Dataset Metrics", ln=1)
+                        pdf.cell(0, 12, "Dataset Metrics", new_x="LMARGIN", new_y="NEXT")
                         pdf.set_font(base_font, size=11)
                         metrics = [
                             ("Records", len(df)),
@@ -181,12 +196,12 @@ Baseline Access: For each peer group, lists Roles present in at least the baseli
                             "Analysis based on user Department only"
                         )
                         pdf.set_font(base_font, "I", 11)
-                        pdf.cell(0, 8, analysis_basis, ln=1)
+                        pdf.cell(0, 8, analysis_basis, new_x="LMARGIN", new_y="NEXT")
                         pdf.ln(3)
 
                         # --- Baseline Access Section ---
                         pdf.set_font(base_font, "B", 13)
-                        pdf.cell(0, 10, "Baseline Access", ln=1)
+                        pdf.cell(0, 10, "Baseline Access", new_x="LMARGIN", new_y="NEXT")
                         pdf.set_font(base_font, size=11)
                         pdf.multi_cell(0, 8, f"Baseline Access: For each peer group, lists Roles present in at least the baseline threshold ({baseline_threshold}%) of users (excluding users with no Title). These are considered the 'common' roles that most users in the group have.")
                         pdf.ln(2)
@@ -208,7 +223,7 @@ Baseline Access: For each peer group, lists Roles present in at least the baseli
                         for group, roles in roles_data:
                             pdf.set_font(base_font, "B", 11)
                             pdf.set_x(10)
-                            pdf.cell(0, 8, group, ln=1)
+                            pdf.cell(0, 8, group, new_x="LMARGIN", new_y="NEXT")
                             pdf.set_font(base_font, size=11)
                             for i in range(0, len(roles), roles_col_count):
                                 pdf.set_x(10)
@@ -222,7 +237,7 @@ Baseline Access: For each peer group, lists Roles present in at least the baseli
                         # --- Anomalies Section ---
                         if report_type == "full":
                             pdf.set_font(base_font, "B", 13)
-                            pdf.cell(0, 10, "Anomalies", ln=1)
+                            pdf.cell(0, 10, "Anomalies", new_x="LMARGIN", new_y="NEXT")
                             pdf.set_font(base_font, size=11)
                             pdf.multi_cell(0, 8, f"Anomalies: Flags any Roles or Entitlements held by fewer than the anomaly threshold ({anomaly_threshold}%) of users in their peer group. These are outlier privileges that may require investigation.")
                             pdf.ln(2)
@@ -256,7 +271,7 @@ Baseline Access: For each peer group, lists Roles present in at least the baseli
                                 for group, roles in anomalies_data:
                                     pdf.set_font(base_font, "B", 11)
                                     pdf.set_x(10)
-                                    pdf.cell(0, 8, group, ln=1)
+                                    pdf.cell(0, 8, group, new_x="LMARGIN", new_y="NEXT")
                                     pdf.set_font(base_font, size=11)
                                     for i in range(0, len(roles), anomalies_col_count):
                                         pdf.set_x(10)
@@ -267,13 +282,13 @@ Baseline Access: For each peer group, lists Roles present in at least the baseli
                                     pdf.ln(2)
                             else:
                                 pdf.set_font(base_font, "I", 11)
-                                pdf.cell(0, 8, "No anomalies found for the selected criteria.", ln=1)
+                                pdf.cell(0, 8, "No anomalies found for the selected criteria.", new_x="LMARGIN", new_y="NEXT")
                                 pdf.ln(2)
                             pdf.add_page()
 
                             # --- Gap Report Section ---
                             pdf.set_font(base_font, "B", 13)
-                            pdf.cell(0, 10, "Gap Report", ln=1)
+                            pdf.cell(0, 10, "Gap Report", new_x="LMARGIN", new_y="NEXT")
                             pdf.set_font(base_font, size=11)
                             pdf.multi_cell(0, 8, "Gap Report: For each peer group, lists any baseline Entitlements that are present in the department baseline but missing from this subgroup. These represent potential gaps in access.")
                             pdf.ln(2)
@@ -293,7 +308,7 @@ Baseline Access: For each peer group, lists Roles present in at least the baseli
                                 for group, roles in gap_data:
                                     pdf.set_font(base_font, "B", 11)
                                     pdf.set_x(10)
-                                    pdf.cell(0, 8, group, ln=1)
+                                    pdf.cell(0, 8, group, new_x="LMARGIN", new_y="NEXT")
                                     pdf.set_font(base_font, size=11)
                                     for i in range(0, len(roles), gap_col_count):
                                         pdf.set_x(10)
@@ -304,9 +319,10 @@ Baseline Access: For each peer group, lists Roles present in at least the baseli
                                     pdf.ln(2)
                             else:
                                 pdf.set_font(base_font, "I", 11)
-                                pdf.cell(0, 8, "No gaps found for the selected criteria.", ln=1)
+                                pdf.cell(0, 8, "No gaps found for the selected criteria.", new_x="LMARGIN", new_y="NEXT")
                                 pdf.ln(2)
-                        return pdf.output(dest='S').encode('latin1')
+                        # Modern approach for FPDF2: get bytes directly
+                        return pdf.output()
 
                     def generate_baseline_pdf(df, baseline_df, peer_group, baseline_threshold):
                         """
