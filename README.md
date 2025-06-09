@@ -8,10 +8,9 @@ A web-based tool for security analysts to upload a CSV of user entitlements, ins
 - Department and Department+Title peer grouping
 - Baseline, Anomaly, and Gap analyses
 - Interactive dashboard (filter, search, sort)
-- Export all reports (CSV/Excel)
+- Export all reports (CSV/PDF)
 - Visualizations (bar charts, heatmaps)
 - Handles large datasets (>20MB)
-- Automated tests for core logic
 
 ## Setup
 1. Clone this repo
@@ -28,7 +27,6 @@ A web-based tool for security analysts to upload a CSV of user entitlements, ins
 Your CSV **must** have these columns in order:
 - UserID
 - Username
-- TID
 - Acc Priv Category
 - Role
 - Entitlement
@@ -38,14 +36,8 @@ Your CSV **must** have these columns in order:
 
 See `sample_data/sample_entitlements.csv` for an example.
 
-## Testing
-Run all tests with:
-```bash
-pytest
-```
-
 ## Deliverables
 - Working Streamlit dashboard
-- Automated tests
 - Sample CSV
-- Screenshots in README (to be added)
+- PDF report generation
+- CSV data export
