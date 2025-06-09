@@ -3,472 +3,362 @@
 
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-from ingest import validate_and_preview_csv, REQUIRED_COLUMNS
-from analysis import baseline_access, anomalies, gap_report
+# import plotly.express as px # Not used in the current version, can be removed if not needed later
+from ingest import validate_and_preview_csv, REQUIRED_COLUMNS # Assuming ingest.py is in the same directory or PYTHONPATH
+from analysis import baseline_access, anomalies, gap_report # Assuming analysis.py is in the same directory or PYTHONPATH
 import io
+import fpdf
 from fpdf import FPDF
-import tempfile
+from fpdf.enums import XPos, YPos
 import datetime
 import os
 
-st.set_page_config(page_title="FIS Entitlements Review")
-st.title("FIS Entitlements Review")
-st.write("Upload a CSV of user entitlements to begin.")
+# Debug prints for FPDF import verification (can be removed in production)
+print(f"DEBUG: FPDF module path: {fpdf.__file__}")
+try:
+    print("DEBUG: Successfully imported XPos and YPos from fpdf.enums")
+    print(f"DEBUG: XPos type: {type(XPos)}, YPos type: {type(YPos)}")
+    if hasattr(XPos, 'LMARGIN'):
+        print(f"DEBUG: XPos.LMARGIN value: {XPos.LMARGIN}") # This should exist
+    else:
+        print("DEBUG: XPos.LMARGIN does not exist") # This indicates a problem
+    if hasattr(YPos, 'NEXT'):
+        print(f"DEBUG: YPos.NEXT value: {YPos.NEXT}") # This should exist
+    else:
+        print("DEBUG: YPos.NEXT does not exist") # This indicates a problem
+except ImportError as e_import:
+    print(f"DEBUG: Failed to import XPos/YPos from fpdf.enums: {e_import}")
+except AttributeError as e_attr:
+    print(f"DEBUG: Attribute error accessing XPos/YPos or their members: {e_attr}")
 
-uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+def main():
+    st.set_page_config(page_title="FIS Entitlements Review", layout="wide")
+    st.title("FIS Entitlements Review")
+    st.write("Upload a CSV of user entitlements to analyze baseline access, anomalies, and gaps.")
 
-if uploaded_file:
-    try:
-        # Handle file upload safely to prevent 'bytearray' encoding issues
-        import tempfile
-        import os
-        
-        # Use binary mode to avoid encoding issues
-        tmp_path = None
+    uploaded_file = st.file_uploader("Upload Entitlements CSV", type=["csv"])
+
+    if uploaded_file:
         try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.csv', mode='wb') as tmp_file:
-                tmp_file.write(uploaded_file.getbuffer())
-                tmp_path = tmp_file.name
+            print(f"DEBUG_CSV: uploaded_file object: {uploaded_file}")
+            uploaded_file.seek(0) # Reset stream position
+            try:
+                print("DEBUG_CSV: Attempting to read and decode uploaded file as UTF-8.")
+                # It's crucial that uploaded_file.read() returns bytes
+                file_bytes = uploaded_file.read()
+                if not isinstance(file_bytes, bytes):
+                    st.error(f"DEBUG_CSV: File read did not return bytes, got {type(file_bytes)}. Cannot decode.")
+                    print(f"DEBUG_CSV: File read did not return bytes, got {type(file_bytes)}. Cannot decode.")
+                    return
+                csv_string_data = file_bytes.decode('utf-8')
+                print("DEBUG_CSV: Successfully decoded to string. Now parsing with pandas from io.StringIO.")
+                df = pd.read_csv(io.StringIO(csv_string_data))
+                print("DEBUG_CSV: Successfully parsed CSV with pandas.")
+            except UnicodeDecodeError as ude:
+                print(f"DEBUG_CSV: UnicodeDecodeError while decoding file: {ude}")
+                st.error(f"Error decoding file: The file does not appear to be UTF-8 encoded. Please ensure it's UTF-8. Details: {ude}")
+                return # Stop processing
+            except Exception as e_pandas: # Catch more general pandas errors
+                print(f"DEBUG_CSV: Error during pandas parsing from StringIO: {e_pandas}")
+                st.error(f"Error parsing CSV data: {e_pandas}")
+                return # Stop processing
             
-            # Now read from the temporary file
-            df = pd.read_csv(tmp_path, encoding='utf-8')
-        finally:
-            # Ensure file is deleted even if read_csv fails
-            if tmp_path and os.path.exists(tmp_path):
-                try:
-                    os.unlink(tmp_path)
-                except:
-                    pass  # Ignore cleanup errors
-        if list(df.columns) != REQUIRED_COLUMNS:
-            st.error(f"CSV must have columns: {REQUIRED_COLUMNS}")
-        else:
+            # Validate CSV columns using the imported REQUIRED_COLUMNS
+            if list(df.columns) != REQUIRED_COLUMNS:
+                st.error(f"CSV validation failed. Expected columns: {REQUIRED_COLUMNS}. Found: {list(df.columns)}.")
+                st.info("Please ensure the uploaded CSV has the correct headers in the correct order and no extra columns.")
+                return # Stop processing
+            
             st.success("CSV schema valid!")
-            st.write("Preview (first 5 rows):")
-            st.dataframe(df.head(5))
+            with st.expander("Preview Data (First 5 Rows)", expanded=False):
+                st.dataframe(df.head(5))
 
-            st.markdown("---")
-            st.header("Configuration Panel")
-            col1, col2 = st.columns(2)
-            with col1:
-                anomaly_threshold = st.number_input(
-                    "Anomaly threshold (%):",
-                    min_value=0.1, max_value=100.0, value=2.0, step=0.1,
-                    help="Flag any privilege held by fewer than this percent of peers as anomalous."
-                )
-            with col2:
-                baseline_threshold = st.number_input(
-                    "Baseline threshold (%):",
-                    min_value=0.1, max_value=100.0, value=95.0, step=0.1,
-                    help="Define 'common' privileges a group should always have."
-                )
-            peer_group = st.radio(
-                "Choose peer group:",
-                ["Department-wide", "Department + Title"]
+            # --- Configuration Panel ---
+            st.sidebar.header("Configuration Panel")
+            anomaly_threshold = st.sidebar.number_input(
+                "Anomaly Threshold (%):",
+                min_value=0.1, max_value=100.0, value=2.0, step=0.1,
+                help="Flag privileges held by fewer than this percent of peers as anomalous."
             )
-            st.info(f"Selected: Anomaly {anomaly_threshold}%, Baseline {baseline_threshold}%, Peer group: {peer_group}")
+            baseline_threshold = st.sidebar.number_input(
+                "Baseline Threshold (%):",
+                min_value=0.1, max_value=100.0, value=95.0, step=0.1,
+                help="Define 'common' privileges (held by at least this percent of peers)."
+            )
+            peer_group_options = ["Department-wide", "Department + Title"]
+            peer_group = st.sidebar.radio(
+                "Choose Peer Group Definition:",
+                peer_group_options,
+                index=0, # Default to "Department-wide"
+                help="'Department-wide': Peers are all users in the same department. 'Department + Title': Peers are users in the same department with the same title."
+            )
+            st.sidebar.info(f"Using: Anomaly {anomaly_threshold}%, Baseline {baseline_threshold}%, Peer group: {peer_group}")
 
-            # Metrics section
+            # --- Dataset Metrics ---
             st.markdown("---")
             st.header("Dataset Metrics")
             users_wo_title = df[df['Title'].isnull() | (df['Title'].astype(str).str.strip() == '')]['UserID'].nunique()
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Records", len(df))
-            col1.metric("Unique Users", df['UserID'].nunique())
-            col1.metric("Departments", df['Department'].nunique())
-            col2.metric("Titles", df['Title'].nunique())
-            col2.metric("Roles", df['Role'].nunique())
-            col2.metric("Access Groups", df['Acc Priv Group'].nunique())
-            col3.metric("Access Categories", df['Acc Priv Category'].nunique())
-            col3.metric("Entitlements", df['Entitlement'].nunique())
-            col3.metric("Users w/o Title", users_wo_title)
+            col1_metrics, col2_metrics, col3_metrics = st.columns(3)
+            col1_metrics.metric("Total Records", len(df))
+            col1_metrics.metric("Unique Users", df['UserID'].nunique())
+            col1_metrics.metric("Unique Departments", df['Department'].nunique())
+            col2_metrics.metric("Unique Titles", df['Title'].nunique())
+            col2_metrics.metric("Unique Roles", df['Role'].nunique())
+            col2_metrics.metric("Unique Access Groups", df['Acc Priv Group'].nunique())
+            col3_metrics.metric("Unique Access Categories", df['Acc Priv Category'].nunique())
+            col3_metrics.metric("Unique Entitlements", df['Entitlement'].nunique())
+            col3_metrics.metric("Users w/o Title", users_wo_title)
 
-            # Filter out users with no Title for baseline analysis
-            df_baseline = df[df['Title'].notnull() & (df['Title'].astype(str).str.strip() != '')]
+            # Filter out users with no Title for baseline analysis if peer group involves Title
+            df_for_baseline_analysis = df.copy()
+            if peer_group == "Department + Title":
+                 df_for_baseline_analysis = df[df['Title'].notnull() & (df['Title'].astype(str).str.strip() != '')].copy() # Use .copy() to avoid SettingWithCopyWarning
+                 if len(df_for_baseline_analysis) < len(df):
+                     st.warning(f"{len(df) - len(df_for_baseline_analysis)} users without a Title were excluded from 'Department + Title' peer group analysis for baseline calculation.")
 
-            # Run analyses and show results
+            # --- Core Analyses ---
             st.markdown("---")
             st.header("Core Analyses & Reports")
-            baseline = baseline_access(df_baseline, baseline_threshold, peer_group)
-            anomalies_df = anomalies(df, anomaly_threshold, peer_group)
-            gap_df = gap_report(df, baseline, peer_group)
+            
+            # Run analyses
+            baseline_data_dict = baseline_access(df_for_baseline_analysis, baseline_threshold, peer_group)
+            anomalies_data_df = anomalies(df, anomaly_threshold, peer_group) 
+            gap_data_df = gap_report(df, baseline_data_dict, peer_group)
 
-            st.subheader("1. Baseline Access")
-            st.caption(f"""\
-Baseline Access: For each peer group, lists Roles present in at least the baseline threshold ({baseline_threshold}%) of users (excluding users with no Title). These are considered the 'common' roles that most users in the group have.
-""")
-            baseline_table = []
-            if peer_group == "Department-wide":
-                for group, ents in baseline.items():
-                    department = group[0]
-                    roles = set(role for role, _ in ents)
-                    for role in roles:
-                        baseline_table.append({
-                            "Department": department,
-                            "Role": role
-                        })
-                baseline_df = pd.DataFrame(baseline_table)
-                st.dataframe(baseline_df)
-                # Export buttons
-                if not baseline_df.empty:
-                    csv = baseline_df.to_csv(index=False).encode('utf-8')
-                    st.download_button("Download Baseline as CSV", csv, "baseline_access.csv", "text/csv")
-                    # PDF export
-                    def generate_pdf_report(df, baseline_df=None, anomalies_df=None, gap_df=None, peer_group="Department-wide", 
-                                            baseline_threshold=95.0, anomaly_threshold=2.0, users_wo_title=0, report_type="full"):
-                        """
-                        Generate a comprehensive PDF report for FIS Entitlements Review.
+            # --- PDF Generation Functions (defined inside main) ---
+            def generate_pdf_report(main_df_for_metrics, baseline_data_for_pdf_dict=None, anomalies_df_for_pdf=None, gap_df_for_pdf=None, 
+                                    current_peer_group="Department-wide", current_baseline_threshold=95.0, current_anomaly_threshold=2.0, 
+                                    num_users_wo_title=0, report_type="full"):
+                pdf = FPDF()
+                base_font = "Helvetica" 
+                
+                def add_table_to_pdf(data_frame, title):
+                    if data_frame is not None and not data_frame.empty:
+                        pdf.set_font(base_font, "B", 12)
+                        pdf.cell(0, 10, title, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="L")
+                        pdf.set_font(base_font, "B", 8) 
                         
-                        This function creates a PDF report containing analysis results including baseline access,
-                        anomalies, and gap reports based on the provided dataframes and configuration settings.
+                        col_names = list(data_frame.columns)
+                        available_width = pdf.w - pdf.l_margin - pdf.r_margin
+                        num_cols = len(col_names)
+                        default_col_width = available_width / num_cols if num_cols > 0 else available_width
+                        col_widths = {col: default_col_width for col in col_names}
                         
-                        Args:
-                            df (pandas.DataFrame): Main dataframe with all entitlement data
-                            baseline_df (pandas.DataFrame, optional): Dataframe with baseline access information
-                            anomalies_df (pandas.DataFrame, optional): Dataframe with anomaly information
-                            gap_df (pandas.DataFrame, optional): Dataframe with gap information
-                            peer_group (str, optional): Peer grouping strategy ("Department-wide" or "Department + Title")
-                            baseline_threshold (float, optional): Percentage threshold for baseline calculation (0-100)
-                            anomaly_threshold (float, optional): Percentage threshold for anomaly detection (0-100)
-                            users_wo_title (int, optional): Number of users without a title
-                            report_type (str, optional): Type of report to generate ("full" or "baseline")
-                            
-                        Returns:
-                            bytes: PDF document as bytes for download
-                            
-                        Note:
-                            The function attempts to use Aptos font if available, otherwise falls back to Arial.
-                            For the full report, all three analysis sections are included: baseline, anomalies, and gaps.
-                            For baseline-only reports, only the first section is included.
-                        """
-                        pdf = FPDF()
-                        # Create PDF with default settings
-                        pdf = FPDF()
+                        # Dynamic column width adjustments (example)
+                        if 'Role' in col_widths and num_cols > 1: col_widths['Role'] = default_col_width * 1.2
+                        if 'Entitlement' in col_widths and num_cols > 1: col_widths['Entitlement'] = default_col_width * 1.5
+                        if 'UserID' in col_widths and num_cols > 1: col_widths['UserID'] = default_col_width * 0.8
                         
-                        # Always use helvetica (built-in font) for consistency and to avoid font issues
-                        # This resolves all font-related errors and deprecation warnings
-                        base_font = "helvetica"
-                        pdf.add_page()
-                        # Title Page
-                        pdf.set_font(base_font, "B", 20)
-                        pdf.cell(0, 15, "FIS Entitlement Review", new_x="LMARGIN", new_y="NEXT", align="C")
-                        pdf.set_font(base_font, size=12)
-                        pdf.cell(0, 10, f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", new_x="LMARGIN", new_y="NEXT", align="C")
-                        pdf.ln(10)
-
-                        # Dataset Metrics
-                        pdf.set_font(base_font, "B", 14)
-                        pdf.cell(0, 12, "Dataset Metrics", new_x="LMARGIN", new_y="NEXT")
-                        pdf.set_font(base_font, size=11)
-                        metrics = [
-                            ("Records", len(df)),
-                            ("Unique Users", df['UserID'].nunique()),
-                            ("Departments", df['Department'].nunique()),
-                            ("Titles", df['Title'].nunique()),
-                            ("Roles", df['Role'].nunique()),
-                            ("Access Groups", df['Acc Priv Group'].nunique()),
-                            ("Access Categories", df['Acc Priv Category'].nunique()),
-                            ("Entitlements", df['Entitlement'].nunique()),
-                            ("Users w/o Title", users_wo_title)
-                        ]
-                        metrics_col_count = 2
-                        metrics_col_width = (pdf.w - 20) / metrics_col_count  # 10 units margin each side
-                        pdf.set_x(10)
-                        for i in range(0, len(metrics), 2):
-                            pdf.set_x(10)
-                            # Left column
-                            pdf.set_font(base_font, "B", 11)
-                            pdf.cell(metrics_col_width * 0.6, 8, str(metrics[i][0]) + ':', border=0, align='R')
-                            pdf.set_font(base_font, size=11)
-                            pdf.cell(metrics_col_width * 0.4, 8, str(metrics[i][1]), border=0, align='L')
-                            # Right column
-                            if i + 1 < len(metrics):
-                                pdf.set_font(base_font, "B", 11)
-                                pdf.cell(metrics_col_width * 0.6, 8, str(metrics[i+1][0]) + ':', border=0, align='R')
-                                pdf.set_font(base_font, size=11)
-                                pdf.cell(metrics_col_width * 0.4, 8, str(metrics[i+1][1]), border=0, align='L')
-                            pdf.ln(8)
+                        # Re-normalize if adjustments made total width too large
+                        current_total_width = sum(col_widths.values())
+                        if current_total_width > available_width and num_cols > 0:
+                            scale_factor = available_width / current_total_width
+                            col_widths = {col: w * scale_factor for col, w in col_widths.items()}
+                        
+                        pdf.set_fill_color(220, 220, 220)
+                        for col_name in col_names:
+                            pdf.cell(col_widths[col_name], 7, str(col_name), border=1, fill=True, align="C")
+                        pdf.ln() # Use ln() for new line
+                        pdf.set_font(base_font, size=7) 
+                        pdf.set_fill_color(255, 255, 255) # White background for data cells
+                        for _, row_data in data_frame.iterrows():
+                            for col_name in col_names:
+                                cell_text = str(row_data[col_name])
+                                # Simple truncation for long text
+                                if pdf.get_string_width(cell_text) > col_widths[col_name] - 2: # -2 for padding
+                                    while pdf.get_string_width(cell_text + '...') > col_widths[col_name] - 2 and len(cell_text) > 5:
+                                        cell_text = cell_text[:-1]
+                                    cell_text += '...'
+                                pdf.cell(col_widths[col_name], 6, cell_text, border=1, align="L")
+                            pdf.ln() # New line after each row
+                        pdf.ln(5) # Extra space after table
+                    else:
+                        pdf.set_font(base_font, "I", 10)
+                        pdf.cell(0, 10, f"No data available for {title}.", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="L")
                         pdf.ln(5)
-                        # Analysis basis
-                        analysis_basis = (
-                            "Analysis based on user Department and Title"
-                            if peer_group == "Department + Title" else
-                            "Analysis based on user Department only"
-                        )
-                        pdf.set_font(base_font, "I", 11)
-                        pdf.cell(0, 8, analysis_basis, new_x="LMARGIN", new_y="NEXT")
-                        pdf.ln(3)
 
-                        # --- Baseline Access Section ---
-                        pdf.set_font(base_font, "B", 13)
-                        pdf.cell(0, 10, "Baseline Access", new_x="LMARGIN", new_y="NEXT")
-                        pdf.set_font(base_font, size=11)
-                        pdf.multi_cell(0, 8, f"Baseline Access: For each peer group, lists Roles present in at least the baseline threshold ({baseline_threshold}%) of users (excluding users with no Title). These are considered the 'common' roles that most users in the group have.")
-                        pdf.ln(2)
-                        # Block format: each group/department gets its own block, roles in grid
-                        roles_data = []
-                        if peer_group == "Department-wide":
-                            for dept in sorted(baseline_df['Department'].unique()):
-                                roles = sorted(baseline_df[baseline_df['Department'] == dept]['Role'].unique())
-                                roles_data.append((dept, roles))
-                        else:
-                            for dept in sorted(baseline_df['Department'].unique()):
-                                titles = sorted(baseline_df[baseline_df['Department'] == dept]['Title'].unique())
-                                for title in titles:
-                                    roles = sorted(baseline_df[(baseline_df['Department'] == dept) & (baseline_df['Title'] == title)]['Role'].unique())
-                                    roles_data.append((f"{dept} / {title}", roles))
-                        # Print each group block
-                        roles_col_count = 2
-                        roles_col_width = (pdf.w - 20) / roles_col_count  # 10 units margin each side
-                        for group, roles in roles_data:
-                            pdf.set_font(base_font, "B", 11)
-                            pdf.set_x(10)
-                            pdf.cell(0, 8, group, new_x="LMARGIN", new_y="NEXT")
-                            pdf.set_font(base_font, size=11)
-                            for i in range(0, len(roles), roles_col_count):
-                                pdf.set_x(10)
-                                for j in range(roles_col_count):
-                                    if i + j < len(roles):
-                                        pdf.cell(roles_col_width, 8, roles[i+j], border=0)
-                                pdf.ln(8)
-                            pdf.ln(2)
-                        pdf.add_page()
+                pdf.add_page()
+                pdf.set_font(base_font, "B", 18)
+                pdf.cell(0, 15, "FIS Entitlement Review Report", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+                pdf.set_font(base_font, size=10)
+                pdf.cell(0, 10, f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+                pdf.ln(8)
 
-                        # --- Anomalies Section ---
-                        if report_type == "full":
-                            pdf.set_font(base_font, "B", 13)
-                            pdf.cell(0, 10, "Anomalies", new_x="LMARGIN", new_y="NEXT")
-                            pdf.set_font(base_font, size=11)
-                            pdf.multi_cell(0, 8, f"Anomalies: Flags any Roles or Entitlements held by fewer than the anomaly threshold ({anomaly_threshold}%) of users in their peer group. These are outlier privileges that may require investigation.")
-                            pdf.ln(2)
-                            # --- Robust anomalies section: skip or show message if no anomalies ---
-                            if not anomalies_df.empty and 'Department' in anomalies_df.columns:
-                                # Before using anomalies_df for PDF, extract Department and Title columns if needed
-                                anomalies_df = anomalies_df.copy()
-                                if 'Group' in anomalies_df.columns:
-                                    anomalies_df['Department'] = anomalies_df['Group'].apply(lambda x: x[0] if isinstance(x, (tuple, list)) and len(x) > 0 else "")
-                                    if peer_group == "Department + Title":
-                                        anomalies_df['Title'] = anomalies_df['Group'].apply(lambda x: x[1] if isinstance(x, (tuple, list)) and len(x) > 1 else "")
+                pdf.set_font(base_font, "B", 12)
+                pdf.cell(0, 10, "Dataset Metrics Summary", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.set_font(base_font, size=9)
+                metrics_summary_list = [
+                    ("Total Records", len(main_df_for_metrics)), ("Unique Users", main_df_for_metrics['UserID'].nunique()),
+                    ("Unique Departments", main_df_for_metrics['Department'].nunique()), ("Unique Titles", main_df_for_metrics['Title'].nunique()),
+                    ("Unique Roles", main_df_for_metrics['Role'].nunique()), ("Unique Access Groups", main_df_for_metrics['Acc Priv Group'].nunique()),
+                    ("Unique Access Categories", main_df_for_metrics['Acc Priv Category'].nunique()), ("Unique Entitlements", main_df_for_metrics['Entitlement'].nunique()),
+                    ("Users w/o Title (in input)", num_users_wo_title)
+                ]
+                metrics_col_w = (pdf.w - pdf.l_margin - pdf.r_margin) / 2 # Width for one metric item (label + value)
+                
+                for i in range(0, len(metrics_summary_list), 2): # Process two metrics per line
+                    pdf.set_x(pdf.l_margin) # Ensure starting at left margin
+                    # Metric 1
+                    pdf.set_font(base_font, "B", 9)
+                    pdf.cell(metrics_col_w * 0.6, 6, str(metrics_summary_list[i][0]) + ':', border=0, align='R')
+                    pdf.set_font(base_font, "", 9) # Regular font for value
+                    pdf.cell(metrics_col_w * 0.4, 6, str(metrics_summary_list[i][1]), border=0, new_x=XPos.RIGHT, align='L') # Move to right for next metric
+                    
+                    # Metric 2 (if exists)
+                    if i + 1 < len(metrics_summary_list):
+                        pdf.set_font(base_font, "B", 9)
+                        pdf.cell(metrics_col_w * 0.6, 6, str(metrics_summary_list[i+1][0]) + ':', border=0, align='R')
+                        pdf.set_font(base_font, "", 9) # Regular font for value
+                        pdf.cell(metrics_col_w * 0.4, 6, str(metrics_summary_list[i+1][1]), border=0, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L') # New line after second metric
+                    else:
+                        pdf.ln(6) # Ensure line break if only one item in the last row
+                pdf.ln(5)
 
-                                anomalies_data = []
-                                if peer_group == "Department-wide":
-                                    for dept in sorted(anomalies_df['Department'].unique()):
-                                        users = sorted(anomalies_df[anomalies_df['Department'] == dept]['Username'].unique())
-                                        for user in users:
-                                            roles = sorted(anomalies_df[(anomalies_df['Department'] == dept) & (anomalies_df['Username'] == user)]['Role'].unique())
-                                            anomalies_data.append((f"{dept} / {user}", roles))
-                                else:  # Department + Title
-                                    for dept in sorted(anomalies_df['Department'].unique()):
-                                        titles = sorted(anomalies_df[anomalies_df['Department'] == dept]['Title'].unique())
-                                        for title in titles:
-                                            users = sorted(anomalies_df[(anomalies_df['Department'] == dept) & (anomalies_df['Title'] == title)]['Username'].unique())
-                                            for user in users:
-                                                roles = sorted(anomalies_df[(anomalies_df['Department'] == dept) & (anomalies_df['Title'] == title) & (anomalies_df['Username'] == user)]['Role'].unique())
-                                                anomalies_data.append((f"{dept} / {title} / {user}", roles))
-                                # Print each group block
-                                anomalies_col_count = 2
-                                anomalies_col_width = (pdf.w - 20) / anomalies_col_count  # 10 units margin each side
-                                for group, roles in anomalies_data:
-                                    pdf.set_font(base_font, "B", 11)
-                                    pdf.set_x(10)
-                                    pdf.cell(0, 8, group, new_x="LMARGIN", new_y="NEXT")
-                                    pdf.set_font(base_font, size=11)
-                                    for i in range(0, len(roles), anomalies_col_count):
-                                        pdf.set_x(10)
-                                        for j in range(anomalies_col_count):
-                                            if i + j < len(roles):
-                                                pdf.cell(anomalies_col_width, 8, roles[i+j], border=0)
-                                        pdf.ln(8)
-                                    pdf.ln(2)
-                            else:
-                                pdf.set_font(base_font, "I", 11)
-                                pdf.cell(0, 8, "No anomalies found for the selected criteria.", new_x="LMARGIN", new_y="NEXT")
-                                pdf.ln(2)
-                            pdf.add_page()
+                analysis_basis_text = (
+                    f"Analysis Configuration: Peer Group by '{current_peer_group}'. "
+                    f"Baseline Threshold: {current_baseline_threshold}%. Anomaly Threshold: {current_anomaly_threshold}%."
+                )
+                pdf.set_font(base_font, "I", 9) # Italic for config summary
+                pdf.multi_cell(0, 5, analysis_basis_text, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+                pdf.ln(5)
+                
+                # Convert baseline_data_dict to DataFrame for PDF reporting
+                baseline_df_for_report = pd.DataFrame()
+                if baseline_data_for_pdf_dict:
+                    baseline_table_rows = []
+                    if current_peer_group == "Department-wide":
+                        cols = ["Department", "Baseline Role"]
+                        for group_key, entitlements_set in baseline_data_for_pdf_dict.items():
+                            dept = group_key[0] if isinstance(group_key, tuple) else group_key # Handle single string or tuple
+                            for role, _ in sorted(list(entitlements_set)): # Percentage not needed for this report table
+                                baseline_table_rows.append({"Department": dept, "Baseline Role": role})
+                        if baseline_table_rows: baseline_df_for_report = pd.DataFrame(baseline_table_rows, columns=cols)
+                    elif current_peer_group == "Department + Title":
+                        cols = ["Department", "Title", "Baseline Role"]
+                        for group_key, entitlements_set in baseline_data_for_pdf_dict.items():
+                            dept, title = group_key
+                            for role, _ in sorted(list(entitlements_set)):
+                                baseline_table_rows.append({"Department": dept, "Title": title, "Baseline Role": role})
+                        if baseline_table_rows: baseline_df_for_report = pd.DataFrame(baseline_table_rows, columns=cols)
+                
+                if report_type == "full" or report_type == "baseline":
+                    if not baseline_df_for_report.empty: pdf.add_page() 
+                    add_table_to_pdf(baseline_df_for_report, "Baseline Access Report")
+                
+                if report_type == "full" or report_type == "anomalies":
+                    if not anomalies_df_for_pdf.empty: pdf.add_page()
+                    add_table_to_pdf(anomalies_df_for_pdf, "Anomalous Access Report")
+                
+                if report_type == "full" or report_type == "gap":
+                    if not gap_df_for_pdf.empty: pdf.add_page()
+                    add_table_to_pdf(gap_df_for_pdf, "Gap Report (Users Missing Baseline Access)")
+                
+                return pdf.output()  # Get PDF as bytes (dest='S' or no dest returns bytes)
 
-                            # --- Gap Report Section ---
-                            pdf.set_font(base_font, "B", 13)
-                            pdf.cell(0, 10, "Gap Report", new_x="LMARGIN", new_y="NEXT")
-                            pdf.set_font(base_font, size=11)
-                            pdf.multi_cell(0, 8, "Gap Report: For each peer group, lists any baseline Entitlements that are present in the department baseline but missing from this subgroup. These represent potential gaps in access.")
-                            pdf.ln(2)
-                            if not gap_df.empty and 'Department' in gap_df.columns:
-                                gap_data = []
-                                for idx, row in gap_df.iterrows():
-                                    group = row['Group']
-                                    role = row['Role']
-                                    if peer_group == "Department-wide":
-                                        gap_data.append((str(group), [role]))
-                                    else:
-                                        dept, title = group if isinstance(group, tuple) else (group, '')
-                                        gap_data.append((f"{dept} / {title}", [role]))
-                                # Print each group block
-                                gap_col_count = 2
-                                gap_col_width = (pdf.w - 20) / gap_col_count  # 10 units margin each side
-                                for group, roles in gap_data:
-                                    pdf.set_font(base_font, "B", 11)
-                                    pdf.set_x(10)
-                                    pdf.cell(0, 8, group, new_x="LMARGIN", new_y="NEXT")
-                                    pdf.set_font(base_font, size=11)
-                                    for i in range(0, len(roles), gap_col_count):
-                                        pdf.set_x(10)
-                                        for j in range(gap_col_count):
-                                            if i + j < len(roles):
-                                                pdf.cell(gap_col_width, 8, roles[i+j], border=0)
-                                        pdf.ln(8)
-                                    pdf.ln(2)
-                            else:
-                                pdf.set_font(base_font, "I", 11)
-                                pdf.cell(0, 8, "No gaps found for the selected criteria.", new_x="LMARGIN", new_y="NEXT")
-                                pdf.ln(2)
-                        # Modern approach for FPDF2: get bytes directly
-                        return pdf.output()
+            # Wrapper for specific PDF types
+            def generate_specific_pdf(report_subtype, main_df_metrics, b_data_dict, an_df, g_df, pg_val, bt_val, at_val, uwt_val):
+                # Common args for generate_pdf_report
+                common_args = {
+                    "main_df_for_metrics": main_df_metrics,
+                    "current_peer_group": pg_val,
+                    "current_baseline_threshold": bt_val,
+                    "current_anomaly_threshold": at_val,
+                    "num_users_wo_title": uwt_val
+                }
+                if report_subtype == "baseline":
+                    return generate_pdf_report(baseline_data_for_pdf_dict=b_data_dict, report_type="baseline", **common_args)
+                elif report_subtype == "anomalies":
+                    return generate_pdf_report(anomalies_df_for_pdf=an_df, report_type="anomalies", **common_args)
+                elif report_subtype == "gap":
+                    return generate_pdf_report(gap_df_for_pdf=g_df, report_type="gap", **common_args)
+                elif report_subtype == "full":
+                    return generate_pdf_report(baseline_data_for_pdf_dict=b_data_dict, anomalies_df_for_pdf=an_df, gap_df_for_pdf=g_df, report_type="full", **common_args)
+                return None
 
-                    def generate_baseline_pdf(df, baseline_df, peer_group, baseline_threshold):
-                        """
-                        Generate a PDF report focused only on baseline access analysis.
-                        
-                        This is a wrapper function that calls generate_pdf_report with report_type='baseline'.
-                        
-                        Args:
-                            df (pandas.DataFrame): Main dataframe with all entitlement data
-                            baseline_df (pandas.DataFrame): Dataframe with baseline access information
-                            peer_group (str): Peer grouping strategy ("Department-wide" or "Department + Title")
-                            baseline_threshold (float): Percentage threshold for baseline calculation (0-100)
-                            
-                        Returns:
-                            bytes: PDF document as bytes for download
-                        """
-                        users_wo_title = df[df['Title'].isnull() | (df['Title'].astype(str).str.strip() == '')]['UserID'].nunique()
-                        return generate_pdf_report(df, baseline_df=baseline_df, peer_group=peer_group, 
-                                                  baseline_threshold=baseline_threshold, users_wo_title=users_wo_title, 
-                                                  report_type="baseline")
+            # --- Display & Download Sections ---
+            tab1, tab2, tab3 = st.tabs(["Baseline Access", "Anomalous Access", "Gap Report"])
 
-                    def generate_full_report_pdf(df, baseline_df, anomalies_df, gap_df, peer_group, baseline_threshold, anomaly_threshold, users_wo_title):
-                        """
-                        Generate a comprehensive PDF report with all analysis sections.
-                        
-                        This is a wrapper function that calls generate_pdf_report with report_type='full'.
-                        
-                        Args:
-                            df (pandas.DataFrame): Main dataframe with all entitlement data
-                            baseline_df (pandas.DataFrame): Dataframe with baseline access information
-                            anomalies_df (pandas.DataFrame): Dataframe with anomaly information
-                            gap_df (pandas.DataFrame): Dataframe with gap information
-                            peer_group (str): Peer grouping strategy ("Department-wide" or "Department + Title")
-                            baseline_threshold (float): Percentage threshold for baseline calculation (0-100)
-                            anomaly_threshold (float): Percentage threshold for anomaly detection (0-100)
-                            users_wo_title (int): Number of users without a title
-                            
-                        Returns:
-                            bytes: PDF document as bytes for download
-                        """
-                        return generate_pdf_report(df, baseline_df=baseline_df, anomalies_df=anomalies_df, gap_df=gap_df,
-                                                  peer_group=peer_group, baseline_threshold=baseline_threshold, 
-                                                  anomaly_threshold=anomaly_threshold, users_wo_title=users_wo_title,
-                                                  report_type="full")
-
-                    # PDF export
-                    pdf_filename = f"Baseline Access Report - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.pdf"
-                    st.download_button("Download Baseline as PDF", generate_baseline_pdf(df, baseline_df, peer_group, baseline_threshold), pdf_filename, "application/pdf")
-
-            else:
-                for group, ents in baseline.items():
-                    department = group[0]
-                    title = group[1] if len(group) > 1 else None
-                    if title is None or str(title).strip() == '':
-                        continue
-                    roles = set(role for role, _ in ents)
-                    for role in roles:
-                        baseline_table.append({
-                            "Department": department,
-                            "Title": title,
-                            "Role": role
-                        })
-                baseline_df = pd.DataFrame(baseline_table)
-                st.dataframe(baseline_df)
-                # Export buttons
-                if not baseline_df.empty:
-                    csv = baseline_df.to_csv(index=False).encode('utf-8')
-                    st.download_button("Download Baseline as CSV", csv, "baseline_access.csv", "text/csv")
-                # Bar chart: Number of common roles per Department+Title
-                if not baseline_df.empty:
-                    fig = px.bar(baseline_df.groupby(["Department", "Title"]).size().reset_index(name="Common Roles"),
-                                 x="Title", y="Common Roles", color="Department",
-                                 title="Number of Common Roles per Title (by Department)")
-                    st.plotly_chart(fig, use_container_width=True)
-
-            st.subheader("2. Anomalies")
-            st.caption(f"""\
-Anomalies: Flags any Roles or Entitlements held by fewer than the anomaly threshold ({anomaly_threshold}%) of users in their peer group. These are outlier privileges that may require investigation.
-""")
-
-            # --- Web Anomalies Table Correction (robust Department/Title extraction for both peer groups, handle missing columns) ---
-            if not anomalies_df.empty:
-                import warnings
-                warnings.filterwarnings("ignore", category=UserWarning)
-                if 'Group' in anomalies_df.columns:
-                    # Handle both peer groups
-                    anomalies_df = anomalies_df.copy()
-                    anomalies_df['Department'] = anomalies_df['Group'].apply(lambda x: x[0] if isinstance(x, (tuple, list)) and len(x) > 0 else "")
-                    if peer_group == "Department + Title":
-                        anomalies_df['Title'] = anomalies_df['Group'].apply(lambda x: x[1] if isinstance(x, (tuple, list)) and len(x) > 1 else "")
-
-                # Only use columns that exist in the DataFrame
-                wanted_cols = ['Department', 'Title', 'UserID', 'Username', 'Role']
-                display_cols = [col for col in wanted_cols if col in anomalies_df.columns]
-                anomalies_df = anomalies_df[display_cols].drop_duplicates()
-                csv = anomalies_df.to_csv(index=False).encode('utf-8')
-                st.dataframe(anomalies_df)
-                st.download_button("Download Anomalies as CSV", csv, "anomalies.csv", "text/csv")
-
-            # Bar chart: Number of anomalies per Department/Title
-            if not anomalies_df.empty:
+            with tab1:
+                st.subheader("1. Baseline Access")
+                st.caption(f"Common roles/entitlements held by at least {baseline_threshold}% of users in their '{peer_group}' peer group.")
+                baseline_display_list = []
                 if peer_group == "Department-wide":
-                    anomalies_count = anomalies_df.groupby("Department").size().reset_index(name="Anomalies")
-                    fig = px.bar(anomalies_count, x="Department", y="Anomalies", title="Number of Anomalies per Department")
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    anomalies_count = anomalies_df.groupby("Department").size().reset_index(name="Anomalies")
-                    fig = px.bar(anomalies_count, x="Department", y="Anomalies", title="Number of Anomalies per Department")
-                    st.plotly_chart(fig, use_container_width=True)
-                    # Heatmap: Anomalies per (Department, Title)
-                    heatmap_data = anomalies_df.groupby(["Department", "Title"]).size().reset_index(name="Anomalies")
-                    fig2 = px.imshow(heatmap_data.pivot(index="Department", columns="Title", values="Anomalies").fillna(0),
-                                    labels=dict(x="Title", y="Department", color="Anomalies"),
-                                    title="Anomalies Heatmap (Department x Title)")
-                    st.plotly_chart(fig2, use_container_width=True)
+                    cols_display = ["Department", "Baseline Role", "Prevalence (%)"]
+                    for group_key, entitlements_set in baseline_data_dict.items():
+                        dept = group_key[0] if isinstance(group_key, tuple) else group_key
+                        for role, percentage in sorted(list(entitlements_set)):
+                            try:
+                                prevalence_display = f"{float(percentage):.1f}"
+                            except ValueError:
+                                prevalence_display = "N/A"
+                            baseline_display_list.append({"Department": dept, "Baseline Role": role, "Prevalence (%)": prevalence_display})
+                    baseline_df_display = pd.DataFrame(baseline_display_list, columns=cols_display) if baseline_display_list else pd.DataFrame(columns=cols_display)
+                elif peer_group == "Department + Title":
+                    cols_display = ["Department", "Title", "Baseline Role", "Prevalence (%)"]
+                    for group_key, entitlements_set in baseline_data_dict.items():
+                        dept, title = group_key
+                        for role, percentage in sorted(list(entitlements_set)):
+                            try:
+                                prevalence_display = f"{float(percentage):.1f}"
+                            except ValueError:
+                                prevalence_display = "N/A"
+                            baseline_display_list.append({"Department": dept, "Title": title, "Baseline Role": role, "Prevalence (%)": prevalence_display})
+                    baseline_df_display = pd.DataFrame(baseline_display_list, columns=cols_display) if baseline_display_list else pd.DataFrame(columns=cols_display)
+                
+                st.dataframe(baseline_df_display)
+                if not baseline_df_display.empty:
+                    csv_baseline = baseline_df_display.to_csv(index=False).encode('utf-8')
+                    st.download_button("Download Baseline as CSV", csv_baseline, "baseline_access.csv", "text/csv", key="csv_baseline")
+                    pdf_bytes_baseline = bytes(generate_specific_pdf("baseline", df, baseline_data_dict, None, None, peer_group, baseline_threshold, anomaly_threshold, users_wo_title))
+                    if pdf_bytes_baseline:
+                        st.download_button("Download Baseline as PDF", pdf_bytes_baseline, "baseline_report.pdf", "application/pdf", key="pdf_baseline")
+                else: st.write("No baseline data to display based on current criteria.")
 
-            st.subheader("3. Gap Report")
-            st.caption(f"""\
-Gap Report: For each peer group, lists any baseline Entitlements that are present in the department baseline but missing from this subgroup. These represent potential gaps in access.
-""")
-            st.dataframe(gap_df)
-            # Export buttons
-            if not gap_df.empty:
-                csv = gap_df.to_csv(index=False).encode('utf-8')
-                st.download_button("Download Gaps as CSV", csv, "gap_report.csv", "text/csv")
-            # Heatmap: Gaps per (Department, Title)
-            if not gap_df.empty and peer_group != "Department-wide":
-                gap_count = gap_df.groupby(["Group"]).size().reset_index(name="Gaps")
-                gap_count[["Department", "Title"]] = pd.DataFrame(gap_count["Group"].tolist(), index=gap_count.index)
-                heatmap_gap = gap_count.pivot(index="Department", columns="Title", values="Gaps").fillna(0)
-                fig_gap = px.imshow(heatmap_gap, labels=dict(x="Title", y="Department", color="Gaps"),
-                                   title="Gap Heatmap (Department x Title)")
-                st.plotly_chart(fig_gap, use_container_width=True)
+            with tab2:
+                st.subheader("2. Anomalous Access")
+                st.caption(f"Users with roles/entitlements held by fewer than {anomaly_threshold}% of their '{peer_group}' peers.")
+                st.dataframe(anomalies_data_df) # anomalies_data_df is already a DataFrame
+                if not anomalies_data_df.empty:
+                    csv_anomalies = anomalies_data_df.to_csv(index=False).encode('utf-8')
+                    st.download_button("Download Anomalies as CSV", csv_anomalies, "anomalous_access.csv", "text/csv", key="csv_anomalies")
+                    pdf_bytes_anomalies = bytes(generate_specific_pdf("anomalies", df, None, anomalies_data_df, None, peer_group, baseline_threshold, anomaly_threshold, users_wo_title))
+                    if pdf_bytes_anomalies:
+                        st.download_button("Download Anomalies as PDF", pdf_bytes_anomalies, "anomalies_report.pdf", "application/pdf", key="pdf_anomalies")
+                else: st.write("No anomalies found based on current criteria.")
 
-            # --- Full PDF Export ---
-            now = datetime.datetime.now()
-            date_str = now.strftime("%y%m%d")
-            pdf_filename = f"FIS Entitlements Review - {date_str}.pdf"
+            with tab3:
+                st.subheader("3. Gap Report (Missing Baseline Access)")
+                st.caption(f"Users missing common roles/entitlements (from baseline) for their '{peer_group}' peer group.")
+                st.dataframe(gap_data_df) # gap_data_df is already a DataFrame
+                if not gap_data_df.empty:
+                    csv_gap = gap_data_df.to_csv(index=False).encode('utf-8')
+                    st.download_button("Download Gap Report as CSV", csv_gap, "gap_report.csv", "text/csv", key="csv_gap")
+                    pdf_bytes_gap = bytes(generate_specific_pdf("gap", df, None, None, gap_data_df, peer_group, baseline_threshold, anomaly_threshold, users_wo_title))
+                    if pdf_bytes_gap:
+                        st.download_button("Download Gap Report as PDF", pdf_bytes_gap, "gap_report.pdf", "application/pdf", key="pdf_gap")
+                else: st.write("No gaps found (all users appear to have baseline access for their group).")
 
             st.markdown("---")
-            st.download_button(
-                "Download Full Report as PDF",
-                generate_full_report_pdf(df, baseline_df, anomalies_df, gap_df, peer_group, baseline_threshold, anomaly_threshold, users_wo_title),
-                pdf_filename,
-                "application/pdf"
-            )
-    except Exception as e:
-        st.error(f"Error processing file: {str(e)}")
-        st.info("Please check that your CSV file follows the required format and try again.")
+            st.header("Full Consolidated PDF Report")
+            if not df.empty: # Ensure df is not empty before generating full report
+                pdf_bytes_full = bytes(generate_specific_pdf("full", df, baseline_data_dict, anomalies_data_df, gap_data_df, peer_group, baseline_threshold, anomaly_threshold, users_wo_title))
+                if pdf_bytes_full:
+                    st.download_button(
+                        label="Download Full Report as PDF",
+                        data=pdf_bytes_full,
+                        file_name="full_entitlement_review_report.pdf",
+                        mime="application/pdf",
+                        key="pdf_full_report"
+                    )
+            else:
+                st.write("No data available to generate a full report (upload a CSV first).")
+
+        except Exception as e:
+            st.error(f"An unexpected error occurred during processing: {e}")
+            print(f"ERROR_MAIN_TRY_EXCEPT: Type: {type(e)}, Error: {e}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            st.code(f"Traceback:\n{traceback.format_exc()}") # Display traceback in UI for easier debugging by user
+
+if __name__ == "__main__":
+    main()
