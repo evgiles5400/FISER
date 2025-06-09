@@ -2,5 +2,3 @@ streamlit
 pandas
 plotly
 pyarrow
-fpdf2
-Pillow

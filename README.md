@@ -8,7 +8,7 @@ A web-based tool for security analysts to upload a CSV of user entitlements, ins
 - Department and Department+Title peer grouping
 - Baseline, Anomaly, and Gap analyses
 - Interactive dashboard (filter, search, sort)
-- Export all reports (CSV/PDF)
+- Export reports as CSV
 - Visualizations (bar charts, heatmaps)
 - Handles large datasets (>20MB)
 
@@ -39,5 +39,4 @@ See `sample_data/sample_entitlements.csv` for an example.
 ## Deliverables
 - Working Streamlit dashboard
 - Sample CSV
-- PDF report generation
 - CSV data export
