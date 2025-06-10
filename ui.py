@@ -3,7 +3,6 @@
 
 import streamlit as st
 import pandas as pd
-# import plotly.express as px # Not used in the current version, can be removed if not needed later
 from ingest import validate_and_preview_csv, REQUIRED_COLUMNS # Assuming ingest.py is in the same directory or PYTHONPATH
 from analysis import baseline_access, anomalies, gap_report # Assuming analysis.py is in the same directory or PYTHONPATH
 import io
@@ -166,27 +165,13 @@ def main():
 
     if uploaded_file:
         try:
-            print(f"DEBUG_CSV: uploaded_file object: {uploaded_file}")
             uploaded_file.seek(0) # Reset stream position
             try:
-                print("DEBUG_CSV: Attempting to read and decode uploaded file as UTF-8.")
-                # It's crucial that uploaded_file.read() returns bytes
                 file_bytes = uploaded_file.read()
-                if not isinstance(file_bytes, bytes):
-                    st.error(f"DEBUG_CSV: File read did not return bytes, got {type(file_bytes)}. Cannot decode.")
-                    print(f"DEBUG_CSV: File read did not return bytes, got {type(file_bytes)}. Cannot decode.")
-                    return
                 csv_string_data = file_bytes.decode('utf-8')
-                print("DEBUG_CSV: Successfully decoded to string. Now parsing with pandas from io.StringIO.")
                 df = pd.read_csv(io.StringIO(csv_string_data))
-                print("DEBUG_CSV: Successfully parsed CSV with pandas.")
-            except UnicodeDecodeError as ude:
-                print(f"DEBUG_CSV: UnicodeDecodeError while decoding file: {ude}")
-                st.error(f"Error decoding file: The file does not appear to be UTF-8 encoded. Please ensure it's UTF-8. Details: {ude}")
-                return # Stop processing
-            except Exception as e_pandas: # Catch more general pandas errors
-                print(f"DEBUG_CSV: Error during pandas parsing from StringIO: {e_pandas}")
-                st.error(f"Error parsing CSV data: {e_pandas}")
+            except Exception as e:
+                st.error(f"Error parsing CSV data: {e}")
                 return # Stop processing
             
             # Validate CSV columns using the imported REQUIRED_COLUMNS
@@ -404,7 +389,6 @@ def main():
                     
                     except Exception as e:
                         st.error(f"Error processing anomalies data: {e}")
-                        print(f"Error in anomalies display: {e}")
                 else:
                     st.write("No anomalies found based on current criteria.")
 
@@ -420,10 +404,7 @@ def main():
 
         except Exception as e:
             st.error(f"An unexpected error occurred during processing: {e}")
-            print(f"ERROR_MAIN_TRY_EXCEPT: Type: {type(e)}, Error: {e}")
-            import traceback
-            print(f"Traceback: {traceback.format_exc()}")
-            st.code(f"Traceback:\n{traceback.format_exc()}") # Display traceback in UI for easier debugging by user
+            st.code(f"Traceback:\n{e}")
             
         # Generate comprehensive TXT report if data is available
         if uploaded_file and not df.empty:
