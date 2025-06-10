@@ -36,7 +36,7 @@ FIS Entitlements Review helps organizations maintain the principle of least priv
 ### Installation
 1. Clone this repository:
    ```bash
-   git clone [https://github.com/yourusername/FISER.git](https://github.com/yourusername/FISER.git)
+   git clone [https://github.com/evgiles5400/FISER.git](https://github.com/evgiles5400/FISER.git)
    cd FISER
 
 2. Create and activate a virtual environment (recommended):
