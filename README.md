@@ -9,8 +9,7 @@ A web-based tool for security analysts to upload a CSV of user entitlements, ins
 - Baseline, Anomaly, and Gap analyses
 - Interactive dashboard (filter, search, sort)
 - Export reports as CSV
-- Visualizations (bar charts, heatmaps)
-- Handles large datasets (>20MB)
+- Export reports as TXT
 
 ## Setup
 1. Clone this repo

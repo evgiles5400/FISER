@@ -8,6 +8,154 @@ from ingest import validate_and_preview_csv, REQUIRED_COLUMNS # Assuming ingest.
 from analysis import baseline_access, anomalies, gap_report # Assuming analysis.py is in the same directory or PYTHONPATH
 import io
 import os
+from datetime import datetime
+
+def generate_txt_report(filename, df, peer_group, baseline_threshold, anomaly_threshold, users_wo_title,
+                       baseline_df_display=None, anomalies_display=None, gap_data_df=None):
+    """Generate a comprehensive text report with all analysis results."""
+    # Helper function to truncate text and add ellipsis if needed
+    def truncate_text(text, max_length):
+        text = str(text)
+        if len(text) <= max_length:
+            return text
+        return text[:max_length-3] + '...'
+    # Initialize report string
+    report = []
+    
+    # Add report header
+    report.append("="*80)
+    report.append("FIS ENTITLEMENTS REVIEW REPORT")
+    report.append("="*80)
+    report.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    report.append("\n")
+    
+    # Add configuration section
+    report.append("-"*80)
+    report.append("CONFIGURATION")
+    report.append("-"*80)
+    report.append(f"File: {filename}")
+    report.append(f"Peer Group Type: {peer_group}")
+    report.append(f"Baseline Threshold: {baseline_threshold}%")
+    report.append(f"Anomaly Threshold: {anomaly_threshold}%")
+    report.append("\n")
+    
+    # Add dataset metrics
+    report.append("-"*80)
+    report.append("DATASET METRICS")
+    report.append("-"*80)
+    report.append(f"Total Records: {len(df)}")
+    report.append(f"Unique Users: {df['UserID'].nunique()}")
+    report.append(f"Departments: {df['Department'].nunique()}")
+    report.append(f"Roles: {df['Role'].nunique()}")
+    report.append(f"Entitlements: {df['Entitlement'].nunique()}")
+    report.append(f"Users Without Title: {users_wo_title}")
+    report.append("\n")
+    
+    # Add gap report section
+    report.append("-"*80)
+    report.append("GAP REPORT (MISSING BASELINE ACCESS)")
+    report.append("-"*80)
+    report.append(f"Users missing common roles/entitlements (from baseline) for their '{peer_group}' peer group.")
+    report.append("\n")
+    
+    if gap_data_df is not None and not gap_data_df.empty:
+        # Get column names for header
+        columns = gap_data_df.columns
+        
+        # Create a format string based on the columns
+        format_parts = []
+        header_parts = []
+        col_widths = {}
+        for col in columns:
+            width = max(len(col), 20)
+            col_widths[col] = width
+            format_parts.append(f"{{:{width}}}")
+            header_parts.append(col)
+        
+        format_str = " ".join(format_parts)
+        
+        # Create header
+        report.append(format_str.format(*header_parts))
+        report.append("-" * (sum(col_widths.values()) + len(columns) - 1))
+        
+        # Add rows
+        for _, row in gap_data_df.iterrows():
+            # Truncate values if needed
+            truncated_values = [truncate_text(row[col], col_widths[col]) for col in columns]
+            report.append(format_str.format(*truncated_values))
+    else:
+        report.append("No gaps found (all users appear to have baseline access for their group).")
+    report.append("\n")
+    
+    # Add anomalies section
+    report.append("-"*80)
+    report.append("ANOMALOUS ACCESS")
+    report.append("-"*80)
+    report.append(f"Users with roles/entitlements held by fewer than {anomaly_threshold}% of their '{peer_group}' peers.")
+    report.append("\n")
+    
+    if anomalies_display is not None and not anomalies_display.empty:
+        # Create header
+        dept_width = 20
+        title_width = 20
+        user_width = 30
+        role_width = 30
+        ent_width = 10
+        report.append(f"{'Department':<{dept_width}} {'Title':<{title_width}} {'User':<{user_width}} {'Anomalous Role':<{role_width}} {'Anomalous Entitlements':<{ent_width}}")
+        report.append("-"*110)
+        
+        # Add rows
+        for _, row in anomalies_display.iterrows():
+            dept = truncate_text(row['Department'], dept_width)
+            title = truncate_text(row['Title'], title_width)
+            user = truncate_text(row['User'], user_width)
+            role = truncate_text(row['Anomalous Role'], role_width)
+            ent = truncate_text(row['Anomalous Entitlements'], ent_width)
+            report.append(f"{dept:<{dept_width}} {title:<{title_width}} {user:<{user_width}} {role:<{role_width}} {ent:<{ent_width}}")
+    else:
+        report.append("No anomalies found based on current criteria.")
+    report.append("\n")
+    
+    # Add baseline access section
+    report.append("-"*80)
+    report.append("BASELINE ACCESS")
+    report.append("-"*80)
+    report.append(f"Common roles held by at least {baseline_threshold}% of users in their '{peer_group}' peer group.")
+    report.append("\n")
+    
+    if baseline_df_display is not None and not baseline_df_display.empty:
+        # Format baseline data as a table
+        if peer_group == "Department-wide":
+            # Create header
+            dept_width = 30
+            role_width = 50
+            report.append(f"{'Department':<{dept_width}} {'Role':<{role_width}}")
+            report.append("-"*80)
+            
+            # Add rows
+            for _, row in baseline_df_display.iterrows():
+                dept = truncate_text(row['Department'], dept_width)
+                role = truncate_text(row['Role'], role_width)
+                report.append(f"{dept:<{dept_width}} {role:<{role_width}}")
+        else:  # Department + Title
+            # Create header
+            dept_width = 20
+            title_width = 30
+            role_width = 50
+            report.append(f"{'Department':<{dept_width}} {'Title':<{title_width}} {'Role':<{role_width}}")
+            report.append("-"*100)
+            
+            # Add rows
+            for _, row in baseline_df_display.iterrows():
+                dept = truncate_text(row['Department'], dept_width)
+                title = truncate_text(row['Title'], title_width)
+                role = truncate_text(row['Role'], role_width)
+                report.append(f"{dept:<{dept_width}} {title:<{title_width}} {role:<{role_width}}")
+    else:
+        report.append("No baseline data available based on current criteria.")
+    
+    # Return the complete report as a string
+    return "\n".join(report)
 
 def main():
     st.set_page_config(page_title="FIS Entitlements Review", layout="wide")
@@ -92,7 +240,7 @@ def main():
             if peer_group == "Department + Title":
                  df_for_baseline_analysis = df[df['Title'].notnull() & (df['Title'].astype(str).str.strip() != '')].copy() # Use .copy() to avoid SettingWithCopyWarning
                  if len(df_for_baseline_analysis) < len(df):
-                     st.warning(f"{len(df) - len(df_for_baseline_analysis)} users without a Title were excluded from 'Department + Title' peer group analysis for baseline calculation.")
+                     st.warning(f"{len(df) - len(df_for_baseline_analysis)} records without a Title were excluded from 'Department + Title' peer group analysis for baseline calculation.")
 
             # --- Core Analyses ---
             st.markdown("---")
@@ -276,6 +424,32 @@ def main():
             import traceback
             print(f"Traceback: {traceback.format_exc()}")
             st.code(f"Traceback:\n{traceback.format_exc()}") # Display traceback in UI for easier debugging by user
+            
+        # Generate comprehensive TXT report if data is available
+        if uploaded_file and not df.empty:
+            st.markdown("---")
+            st.subheader("Comprehensive Report")
+            st.caption("Download a complete text report with all analysis results.")
+            
+            txt_report = generate_txt_report(
+                filename=uploaded_file.name,
+                df=df,
+                peer_group=peer_group,
+                baseline_threshold=baseline_threshold,
+                anomaly_threshold=anomaly_threshold,
+                users_wo_title=users_wo_title,
+                baseline_df_display=baseline_df_display if 'baseline_df_display' in locals() else None,
+                anomalies_display=anomalies_display if 'anomalies_display' in locals() else None,
+                gap_data_df=gap_data_df if 'gap_data_df' in locals() else None
+            )
+            
+            st.download_button(
+                "Download Report as TXT",
+                txt_report,
+                "fis_entitlements_review_report.txt",
+                "text/plain",
+                key="txt_report"
+            )
 
 if __name__ == "__main__":
     main()
